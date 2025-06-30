@@ -45,7 +45,13 @@ class FileManager:
             print("\n💡 Tips:")
             print("   • Add .txt files to the TTS project folder or its subdirectories")
             print("   • Use -f option to specify a file directly")
-            return None
+            print("\nWould you like to enter a custom file path? (y/n): ", end='')
+            sys.stdout.flush()
+            choice = input().strip().lower()
+            if choice in ['y', 'yes']:
+                return FileManager._get_custom_file_path()
+            else:
+                return None
         
         # Get the project root directory for relative path display
         tts_converter_dir = os.path.dirname(os.path.abspath(__file__))
@@ -142,15 +148,22 @@ class FileManager:
         print("----------------------------------------------------------------------")
         # Add an empty line for better spacing
         print("")
-        # Add another empty line (this is the extra line you requested)
+        # Add another empty line
         print("")
         # Move the cursor up one line to be ready for input
         sys.stdout.write("\033[F")
         
+        print("💡 Tips for entering file paths:")
+        print("  • Enter the full path to a .txt file anywhere on your system")
+        print("  • On macOS/Linux, use forward slashes: /")
+        print("  • You can drag and drop a file into the terminal")
+        print("  • Example: /Users/username/Documents/my_text.txt")
+        print("")
+        
         while True:
             print("📁 Enter full path to your text file (or 'q' to cancel): ", end='')
             sys.stdout.flush()
-            custom_path = input().strip().strip('"')
+            custom_path = input().strip().strip('"').strip("'")
             
             if not custom_path:
                 continue
@@ -159,10 +172,32 @@ class FileManager:
                 # No need to print message here, main script will handle it
                 return "QUIT"  # Special return value to indicate user explicitly quit
             
+            # Try to expand user directory (e.g., ~/Documents)
+            if custom_path.startswith('~'):
+                custom_path = os.path.expanduser(custom_path)
+            
+            # Check if file exists
             if os.path.exists(custom_path):
-                return custom_path
+                if os.path.isfile(custom_path):
+                    # Check if it's a text file
+                    if not custom_path.lower().endswith('.txt'):
+                        print(f"⚠️ '{custom_path}' is not a .txt file. Are you sure you want to use it? (y/n): ", end='')
+                        sys.stdout.flush()
+                        use_anyway = input().strip().lower()
+                        if use_anyway in ['y', 'yes']:
+                            return custom_path
+                        else:
+                            continue
+                    return custom_path
+                else:
+                    print(f"❌ '{custom_path}' is a directory, not a file. Please enter a file path.")
             else:
                 print(f"❌ File '{custom_path}' not found!")
+                # Check if the directory exists at least
+                dir_path = os.path.dirname(custom_path)
+                if dir_path and not os.path.exists(dir_path):
+                    print(f"⚠️ Directory '{dir_path}' does not exist either.")
+                
                 print("")  # Add an empty line
                 # Move the cursor up one line
                 sys.stdout.write("\033[F")

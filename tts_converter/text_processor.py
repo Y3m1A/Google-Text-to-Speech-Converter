@@ -4,6 +4,7 @@ Text processing functionality for the TTS converter.
 """
 import os
 import json
+import glob
 import hashlib
 from .config import Config
 
@@ -67,9 +68,24 @@ class TextProcessor:
         return chunks
     
     @staticmethod
+    def _get_boundary_file_path(file_path):
+        """Get standardized path for the boundary file.
+        This will store the boundary file in the project directory with a unique name."""
+        # Get the project directory
+        project_dir = Config.get_project_path()
+        
+        # Create a unique filename based on the original file name and path hash
+        file_name = os.path.basename(file_path)
+        path_hash = hashlib.md5(file_path.encode('utf-8')).hexdigest()[:8]  # Use first 8 chars of hash
+        boundary_file_name = f"{file_name}_{path_hash}{Config.CHUNK_BOUNDARIES_SUFFIX}"
+        
+        # Return the full path to the boundary file in the project directory
+        return os.path.join(project_dir, boundary_file_name)
+
+    @staticmethod
     def _load_chunk_boundaries(file_path, text):
         """Load existing chunk boundaries."""
-        boundary_file = file_path + Config.CHUNK_BOUNDARIES_SUFFIX
+        boundary_file = TextProcessor._get_boundary_file_path(file_path)
         try:
             with open(boundary_file, 'r') as f:
                 data = json.load(f)
@@ -90,7 +106,7 @@ class TextProcessor:
     @staticmethod
     def _save_chunk_boundaries(file_path, text, boundaries):
         """Save chunk boundaries for consistency."""
-        boundary_file = file_path + Config.CHUNK_BOUNDARIES_SUFFIX
+        boundary_file = TextProcessor._get_boundary_file_path(file_path)
         try:
             data = {
                 'text_hash': hashlib.md5(text.encode('utf-8')).hexdigest(),
@@ -98,15 +114,31 @@ class TextProcessor:
             }
             with open(boundary_file, 'w') as f:
                 json.dump(data, f)
-        except Exception:
-            pass  # Ignore save errors
+        except Exception as e:
+            print(f"⚠️ Could not save chunk boundaries: {e}")
     
     @staticmethod
     def cleanup_chunk_boundaries(file_path):
         """Clean up chunk boundary files."""
-        boundary_file = file_path + Config.CHUNK_BOUNDARIES_SUFFIX
-        try:
-            if os.path.exists(boundary_file):
-                os.remove(boundary_file)
-        except Exception:
-            pass
+        if file_path:
+            # Clean up specific file's boundaries
+            boundary_file = TextProcessor._get_boundary_file_path(file_path)
+            try:
+                if os.path.exists(boundary_file):
+                    os.remove(boundary_file)
+                    return True
+            except Exception as e:
+                print(f"⚠️ Could not remove boundary file: {e}")
+                return False
+        else:
+            # Clean up all boundary files in the project directory
+            project_dir = Config.get_project_path()
+            boundary_files = glob.glob(os.path.join(project_dir, f"*{Config.CHUNK_BOUNDARIES_SUFFIX}"))
+            cleaned = False
+            for boundary_file in boundary_files:
+                try:
+                    os.remove(boundary_file)
+                    cleaned = True
+                except Exception as e:
+                    print(f"⚠️ Could not remove boundary file {boundary_file}: {e}")
+            return cleaned

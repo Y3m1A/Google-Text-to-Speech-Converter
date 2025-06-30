@@ -103,7 +103,6 @@ def print_header():
     print("\n" + "=" * 80)
     print("🎙️  MODERN TEXT-TO-SPEECH CONVERTER  🎙️")
     print("=" * 80)
-    print("Type 'h' for help with commands")
     print("=" * 80 + "\n")
 
 
@@ -163,14 +162,11 @@ def cleanup_old_progress_files():
         except Exception as e:
             print(f"⚠️ Could not remove {db_file}: {e}")
     
-    # Find and remove boundaries files
-    boundaries_files = glob.glob(os.path.join(project_dir, "*_chunk_boundaries.json"))
-    for boundaries_file in boundaries_files:
-        try:
-            os.remove(boundaries_file)
-            print(f"🧹 Removed: {boundaries_file}")
-        except Exception as e:
-            print(f"⚠️ Could not remove {boundaries_file}: {e}")
+    # Find and remove boundaries files using TextProcessor
+    if TextProcessor.cleanup_chunk_boundaries(None):
+        print(f"🧹 Removed boundary files from the project directory")
+    else:
+        print(f"ℹ️ No boundary files found to clean up")
     
     # Find and remove temp files (only if no active processes)
     # NOTE: Preserving .mp3 files as they are the TTS conversion results
@@ -236,6 +232,8 @@ def main(recursive_call=False):
             return
     elif file_path and not os.path.exists(file_path):
         print(f"❌ File '{file_path}' not found.")
+        print("💡 The file could not be found at the specified location.")
+        print("Switching to interactive file selection mode...")
         file_path = FileManager.interactive_file_selection()
         if file_path == "QUIT":
             print("\n❌ Exiting file selection.\n")
@@ -311,14 +309,11 @@ def main(recursive_call=False):
                 # Delete checkpoint progress data
                 checkpoint_mgr.delete_all_progress(file_path)
                 
-                # Delete chunk boundaries file
-                boundaries_file = file_path + "_chunk_boundaries.json"
-                if os.path.exists(boundaries_file):
-                    try:
-                        os.remove(boundaries_file)
-                        print(f"🧹 Removed boundaries file: {os.path.basename(boundaries_file)}")
-                    except Exception as e:
-                        print(f"⚠️ Could not remove boundaries file: {e}")
+                # Delete chunk boundaries file using the TextProcessor's method
+                if TextProcessor.cleanup_chunk_boundaries(file_path):
+                    print(f"🧹 Removed boundaries file for: {os.path.basename(file_path)}")
+                else:
+                    print(f"ℹ️ No boundaries file found for: {os.path.basename(file_path)}")
                 
                 # Delete audio output folder if exists and user confirms
                 if existing_progress and 'output_file' in existing_progress:
