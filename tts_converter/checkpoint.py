@@ -8,22 +8,40 @@ import json
 import time
 import stat
 import sqlite3
+import hashlib
 from .config import Config
 
 class CheckpointManager:
     """Manages checkpoint/resume functionality."""
     
     def __init__(self, db_path=None):
+        # Store the main database path but don't create it yet
         if db_path is None:
-            # Use a path relative to the project directory
-            self.db_path = os.path.join(Config.get_project_path(), "tts_checkpoints.db")
+            self.main_db_path = os.path.join(Config.get_project_path(), "tts_checkpoints.db")
         else:
-            self.db_path = db_path
-        self._init_database()
+            self.main_db_path = db_path
+        self.current_db_path = self.main_db_path  # Default to main path
     
-    def _init_database(self):
-        """Initialize checkpoint database."""
-        with sqlite3.connect(self.db_path) as conn:
+    def _get_prefixed_db_path(self, file_path, prefix=None):
+        """Get the database path specific to this file/prefix."""
+        project_dir = Config.get_project_path()
+        
+        # If no prefix provided, use the base filename without extension
+        if not prefix:
+            prefix = os.path.splitext(os.path.basename(file_path))[0]
+            
+        # Create a sanitized prefix for filenames
+        safe_prefix = "".join(c for c in prefix if c.isalnum() or c in ('-', '_')).lower()
+        
+        # Create a unique identifier from the file path
+        file_hash = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        
+        # Create the prefixed database path
+        return os.path.join(project_dir, f"tts_checkpoints_{safe_prefix}_{file_hash}.db")
+    
+    def _init_database(self, db_path):
+        """Initialize checkpoint database at the specified path."""
+        with sqlite3.connect(db_path) as conn:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS checkpoints (
                     id INTEGER PRIMARY KEY,
@@ -47,7 +65,14 @@ class CheckpointManager:
     def save_progress(self, file_path, total_chunks, completed_chunks, failed_chunks, 
                      temp_files, output_file, language, slow, status, cumulative_time=None, session_start=None, prefix=None):
         """Save processing progress with timing information."""
-        with sqlite3.connect(self.db_path) as conn:
+        # Get the prefixed database path
+        self.current_db_path = self._get_prefixed_db_path(file_path, prefix)
+        
+        # Ensure the database exists
+        if not os.path.exists(self.current_db_path):
+            self._init_database(self.current_db_path)
+        
+        with sqlite3.connect(self.current_db_path) as conn:
             conn.execute('''
                 INSERT OR REPLACE INTO checkpoints 
                 (file_path, total_chunks, completed_chunks, failed_chunks, temp_files, 
@@ -59,148 +84,177 @@ class CheckpointManager:
     
     def load_progress(self, file_path):
         """Load existing progress with timing information."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                'SELECT * FROM checkpoints WHERE file_path = ? AND status != "completed"',
-                (file_path,)
-            )
-            result = cursor.fetchone()
-            
-            if result:
-                return {
-                    'file_path': result[1],
-                    'total_chunks': result[2], 
-                    'completed_chunks': result[3],
-                    'failed_chunks': json.loads(result[4]) if result[4] else [],
-                    'temp_files': json.loads(result[5]) if result[5] else [],
-                    'output_file': result[6],
-                    'language': result[7],
-                    'slow': bool(result[8]),
-                    'status': result[9],
-                    'cumulative_processing_time': result[10] if len(result) > 10 else 0.0,
-                    'session_start_time': result[11] if len(result) > 11 else time.time(),
-                    'file_prefix': result[12] if len(result) > 12 else None
-                }
+        # First check for any existing prefixed database for this file
+        project_dir = Config.get_project_path()
+        file_hash = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        possible_dbs = glob.glob(os.path.join(project_dir, f"tts_checkpoints_*_{file_hash}.db"))
+        
+        # Also check the main database for legacy entries
+        if os.path.exists(self.main_db_path):
+            possible_dbs.append(self.main_db_path)
+        
+        for db_path in possible_dbs:
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    cursor = conn.execute(
+                        'SELECT * FROM checkpoints WHERE file_path = ? AND status != "completed"',
+                        (file_path,)
+                    )
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        # Store the current database path for future operations
+                        self.current_db_path = db_path
+                        
+                        return {
+                            'file_path': result[1],
+                            'total_chunks': result[2], 
+                            'completed_chunks': result[3],
+                            'failed_chunks': json.loads(result[4]) if result[4] else [],
+                            'temp_files': json.loads(result[5]) if result[5] else [],
+                            'output_file': result[6],
+                            'language': result[7],
+                            'slow': bool(result[8]),
+                            'status': result[9],
+                            'cumulative_processing_time': result[10] if len(result) > 10 else 0.0,
+                            'session_start_time': result[11] if len(result) > 11 else time.time(),
+                            'file_prefix': result[12] if len(result) > 12 else None
+                        }
+            except sqlite3.Error:
+                continue  # Try next database if this one fails
+                
         return None
     
     def mark_completed(self, file_path):
         """Mark processing as completed."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                'UPDATE checkpoints SET status = "completed", updated_at = CURRENT_TIMESTAMP WHERE file_path = ?',
-                (file_path,)
-            )
-    
-    def cleanup_temp_files(self, temp_files):
-        """Clean up temporary files - PRESERVING .mp3 files as they are the TTS output."""
-        # Do not remove .mp3 files as they are the converted TTS files (end product)
-        for temp_file in temp_files:
+        if self.current_db_path:
+            with sqlite3.connect(self.current_db_path) as conn:
+                conn.execute(
+                    'UPDATE checkpoints SET status = "completed", updated_at = CURRENT_TIMESTAMP WHERE file_path = ?',
+                    (file_path,)
+                )
+            
+            # After marking as completed, try to clean up this specific database
             try:
-                if os.path.exists(temp_file):
-                    # Skip cleanup of .mp3 files - they are the TTS conversion results
-                    if temp_file.endswith('.mp3'):
-                        continue
-                    os.remove(temp_file)
-            except Exception:
-                pass  # Ignore cleanup errors
-    
-    def cleanup_progress_files(self, file_path):
-        """Clean up progress database and boundaries file after successful completion."""
-        project_dir = Config.get_project_path()
-        
-        try:
-            # Remove the specific file entry from the database
-            entries_remain = True
-            with sqlite3.connect(self.db_path) as conn:
-                # Delete the specific file entry if file_path provided
-                if file_path:
-                    conn.execute('DELETE FROM checkpoints WHERE file_path = ?', (file_path,))
-                    print(f"🧹 Removed database entry for: {file_path}")
+                # Check if there are any incomplete entries
+                with sqlite3.connect(self.current_db_path) as conn:
+                    cursor = conn.execute('SELECT COUNT(*) FROM checkpoints WHERE status != "completed"')
+                    incomplete = cursor.fetchone()[0]
                 
-                # Check if any entries remain in the database
-                cursor = conn.execute('SELECT COUNT(*) FROM checkpoints')
-                count = cursor.fetchone()[0]
-                entries_remain = count > 0
+                if incomplete == 0:
+                    # No incomplete entries, safe to remove this database
+                    os.remove(self.current_db_path)
+                    print(f"🧹 Removed completed checkpoint database: {os.path.basename(self.current_db_path)}")
+            except Exception as e:
+                print(f"⚠️ Could not clean up completed database: {e}")
+    
+    def cleanup_database_files(self, project_dir=None):
+        """Clean up all checkpoint database files."""
+        if project_dir is None:
+            project_dir = Config.get_project_path()
             
-            # Remove progress database if no entries remain or if no file_path specified (global cleanup)
-            if not entries_remain or not file_path:
-                if os.path.exists(self.db_path):
-                    try:
-                        os.remove(self.db_path)
-                        print(f"🧹 Cleaned up progress database: {self.db_path}")
-                    except Exception as e:
-                        print(f"⚠️ Could not remove progress database {self.db_path}: {e}")
-                        
-                        # Additional attempt - try with different permissions
-                        try:
-                            os.chmod(self.db_path, stat.S_IWRITE | stat.S_IREAD)
-                            os.remove(self.db_path)
-                            print(f"🧹 Cleaned up progress database (second attempt): {self.db_path}")
-                        except Exception as e2:
-                            print(f"⚠️ Second attempt failed: {e2}")
+        try:
+            files_cleaned = 0
             
-            # Also look for any other .db files in case the path changed
-            db_files = glob.glob(os.path.join(project_dir, "*.db"))
+            # Find and remove all checkpoint database files
+            db_files = glob.glob(os.path.join(project_dir, "tts_checkpoints_*.db"))
             for db_file in db_files:
-                if os.path.abspath(db_file) != os.path.abspath(self.db_path) and "tts" in db_file.lower():
-                    try:
-                        os.remove(db_file)
-                        print(f"🧹 Cleaned up additional database file: {db_file}")
-                    except Exception as e:
-                        print(f"⚠️ Could not remove additional database {db_file}: {e}")
+                try:
+                    with sqlite3.connect(db_file) as conn:
+                        # Check if all entries are completed
+                        cursor = conn.execute('SELECT COUNT(*) FROM checkpoints WHERE status != "completed"')
+                        incomplete = cursor.fetchone()[0]
+                        
+                        if incomplete == 0:
+                            # All entries completed, safe to remove
+                            os.remove(db_file)
+                            print(f"🧹 Removed completed checkpoint database: {os.path.basename(db_file)}")
+                            files_cleaned += 1
+                        else:
+                            print(f"ℹ️ Database {os.path.basename(db_file)} has {incomplete} active conversions")
+                except sqlite3.Error:
+                    # Database might be corrupted
+                    os.remove(db_file)
+                    print(f"🧹 Removed corrupted database file: {os.path.basename(db_file)}")
+                    files_cleaned += 1
+                except Exception as e:
+                    print(f"⚠️ Error processing database file {os.path.basename(db_file)}: {e}")
+                    
+            return files_cleaned
             
-            # Check for checkpoint files
-            checkpoint_files = glob.glob(os.path.join(project_dir, "*checkpoint*.db"))
-            for ckpt_file in checkpoint_files:
-                if os.path.abspath(ckpt_file) != os.path.abspath(self.db_path):
-                    try:
-                        os.remove(ckpt_file)
-                        print(f"🧹 Cleaned up checkpoint file: {ckpt_file}")
-                    except Exception as e:
-                        print(f"⚠️ Could not remove checkpoint file {ckpt_file}: {e}")
         except Exception as e:
             print(f"⚠️ Error during database cleanup: {e}")
-        
+            return 0
+    
+    def cleanup_progress_files(self, file_path=None):
+        """Clean up progress files for a specific file or all completed files."""
         try:
-            # Remove boundaries file if file_path is provided
             if file_path:
+                # Get the specific database for this file
+                self.current_db_path = self._get_prefixed_db_path(file_path)
+                
+                if os.path.exists(self.current_db_path):
+                    with sqlite3.connect(self.current_db_path) as conn:
+                        # Check if there are any incomplete entries
+                        cursor = conn.execute('SELECT COUNT(*) FROM checkpoints WHERE status != "completed"')
+                        incomplete = cursor.fetchone()[0]
+                        
+                        if incomplete == 0:
+                            # No incomplete entries, safe to remove database
+                            os.remove(self.current_db_path)
+                            print(f"🧹 Removed completed checkpoint database: {os.path.basename(self.current_db_path)}")
+                
+                # Clean up boundaries file
                 boundary_file = file_path + Config.CHUNK_BOUNDARIES_SUFFIX
                 if os.path.exists(boundary_file):
                     os.remove(boundary_file)
-                    print(f"🧹 Cleaned up boundaries file: {boundary_file}")
-            
-            # Also look for any boundaries files that might match
-            boundary_files = glob.glob(os.path.join(project_dir, "*" + Config.CHUNK_BOUNDARIES_SUFFIX))
-            for b_file in boundary_files:
-                if not file_path or os.path.abspath(b_file) != os.path.abspath(file_path + Config.CHUNK_BOUNDARIES_SUFFIX):
+                    print(f"🧹 Removed boundaries file: {os.path.basename(boundary_file)}")
+            else:
+                # Clean up all completed progress files
+                self.cleanup_database_files()
+                
+                # Clean up all boundary files for completed conversions
+                project_dir = Config.get_project_path()
+                boundaries = glob.glob(os.path.join(project_dir, "*_chunk_boundaries.json"))
+                for b_file in boundaries:
                     try:
-                        os.remove(b_file)
-                        print(f"🧹 Cleaned up additional boundaries file: {b_file}")
+                        # Check if there's an active database for this file
+                        file_path = b_file[:-len(Config.CHUNK_BOUNDARIES_SUFFIX)]
+                        db_path = self._get_prefixed_db_path(file_path)
+                        
+                        if not os.path.exists(db_path):
+                            # No active database, safe to remove boundary file
+                            os.remove(b_file)
+                            print(f"🧹 Removed boundaries file: {os.path.basename(b_file)}")
                     except Exception as e:
-                        print(f"⚠️ Could not remove boundaries file {b_file}: {e}")
+                        print(f"⚠️ Could not check/remove boundary file: {e}")
+                
         except Exception as e:
-            print(f"⚠️ Could not remove boundaries files: {e}")
+            print(f"⚠️ Error cleaning up progress files: {e}")
     
     def update_cumulative_time(self, file_path, additional_time):
         """Update the cumulative processing time for a file."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('''
-                UPDATE checkpoints 
-                SET cumulative_processing_time = cumulative_processing_time + ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE file_path = ?
-            ''', (additional_time, file_path))
+        if self.current_db_path and os.path.exists(self.current_db_path):
+            with sqlite3.connect(self.current_db_path) as conn:
+                conn.execute('''
+                    UPDATE checkpoints 
+                    SET cumulative_processing_time = cumulative_processing_time + ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE file_path = ?
+                ''', (additional_time, file_path))
     
     def get_cumulative_time(self, file_path):
         """Get the cumulative processing time for a file."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                'SELECT cumulative_processing_time FROM checkpoints WHERE file_path = ?',
-                (file_path,)
-            )
-            result = cursor.fetchone()
-            return result[0] if result else 0.0
-        
+        if self.current_db_path and os.path.exists(self.current_db_path):
+            with sqlite3.connect(self.current_db_path) as conn:
+                cursor = conn.execute(
+                    'SELECT cumulative_processing_time FROM checkpoints WHERE file_path = ?',
+                    (file_path,)
+                )
+                result = cursor.fetchone()
+                return result[0] if result else 0.0
+        return 0.0
+    
     def delete_all_progress(self, file_path):
         """Delete all progress data and temp files for a specific file."""
         project_dir = Config.get_project_path()
@@ -208,31 +262,21 @@ class CheckpointManager:
         try:
             print("🗑️ Deleting all progress data...")
             
-            # Remove from database
-            entries_remain = True
-            with sqlite3.connect(self.db_path) as conn:
-                # Delete the specific file entry
-                conn.execute('DELETE FROM checkpoints WHERE file_path = ?', (file_path,))
-                print(f"🗑️ Removed progress database entry for: {file_path}")
-                
-                # Check if any entries remain in the database
-                cursor = conn.execute('SELECT COUNT(*) FROM checkpoints')
-                count = cursor.fetchone()[0]
-                entries_remain = count > 0
+            # Get the specific database path for this file
+            db_path = self._get_prefixed_db_path(file_path)
             
-            # If no entries remain, delete the entire database file
-            if not entries_remain and os.path.exists(self.db_path):
+            if os.path.exists(db_path):
                 try:
-                    os.remove(self.db_path)
-                    print(f"🗑️ Removed empty checkpoints database: {self.db_path}")
+                    os.remove(db_path)
+                    print(f"🗑️ Removed checkpoint database: {os.path.basename(db_path)}")
                 except Exception as e:
-                    print(f"⚠️ Could not remove checkpoints database file: {e}")
+                    print(f"⚠️ Could not remove checkpoint database: {e}")
             
             # Remove boundaries file
             boundary_file = file_path + Config.CHUNK_BOUNDARIES_SUFFIX
             if os.path.exists(boundary_file):
                 os.remove(boundary_file)
-                print(f"🗑️ Removed boundaries file: {boundary_file}")
+                print(f"🗑️ Removed boundaries file: {os.path.basename(boundary_file)}")
             
             # Remove all temp chunk files for this conversion - check both current directory and output directory
             for search_dir in [project_dir, Config.get_default_output_dir()]:
@@ -251,7 +295,7 @@ class CheckpointManager:
                         for temp_file in all_files:
                             try:
                                 os.remove(temp_file)
-                                print(f"🗑️ Removed: {temp_file}")
+                                print(f"🗑️ Removed: {os.path.basename(temp_file)}")
                             except Exception as e:
                                 print(f"⚠️ Could not remove {temp_file}: {e}")
             

@@ -28,21 +28,33 @@ class ShutdownHandler:
         signal.signal(signal.SIGTERM, self._signal_handler)
     
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals."""
-        self.shutdown_requested = True
-        
-        # Only show processing-related messages if processing has started
-        if self.processing_started:
-            print(f"\n{Config.STOP_EMOJI} Received shutdown signal ({signum})")
-            print("Finishing current chunk and saving progress...")
-            try:
-                self.progress_tracker.stop("Interrupted")
-            except Exception:
-                pass
-        else:
-            # Simple exit message if processing hasn't started yet
-            print("\n❌ Operation canceled by user.\n")
-            sys.exit(0)
+        """Handle shutdown signals (Ctrl+C/SIGINT and SIGTERM)."""
+        if signum == signal.SIGINT:  # Ctrl+C
+            # Set flags for immediate stop and force stop (to redo current chunk on resume)
+            self.shutdown_requested = True
+            self.force_stop_requested = True
+            
+            # Print exit message and exit immediately
+            print("\n" + "="*60)
+            print(f"{Config.STOP_EMOJI} Process interrupted by user (Ctrl+C)")
+            print(f"💾 Progress saved - you can resume from the last completed chunk")
+            print(f"⚠️  Current chunk will be redone when resumed")
+            print("="*60 + "\n")
+            
+            # Force immediate exit
+            sys.exit(1)
+        else:  # SIGTERM or other signals
+            self.shutdown_requested = True
+            if self.processing_started:
+                print(f"\n{Config.STOP_EMOJI} Received shutdown signal ({signum})")
+                print("Finishing current chunk and saving progress...")
+                try:
+                    self.progress_tracker.stop("Interrupted")
+                except Exception:
+                    pass
+            else:
+                print("\n❌ Operation canceled.\n")
+                sys.exit(0)
     
     def _start_input_listener(self):
         """Start background input listener."""

@@ -147,26 +147,12 @@ def cleanup_old_progress_files():
     if confirm != 'y':
         print("Cleanup cancelled.")
         return
-    
-    # Find and remove database files
-    db_files = glob.glob(os.path.join(project_dir, "*.db"))
-    # Ensure tts_checkpoints.db is included in the list
-    checkpoints_db = os.path.join(project_dir, "tts_checkpoints.db")
-    if os.path.exists(checkpoints_db) and checkpoints_db not in db_files:
-        db_files.append(checkpoints_db)
         
-    for db_file in db_files:
-        try:
-            os.remove(db_file)
-            print(f"🧹 Removed: {db_file}")
-        except Exception as e:
-            print(f"⚠️ Could not remove {db_file}: {e}")
+    # Create a temporary checkpoint manager for cleanup
+    checkpoint_mgr = CheckpointManager()
     
-    # Find and remove boundaries files using TextProcessor
-    if TextProcessor.cleanup_chunk_boundaries(None):
-        print(f"🧹 Removed boundary files from the project directory")
-    else:
-        print(f"ℹ️ No boundary files found to clean up")
+    # Clean up all checkpoint databases and progress
+    checkpoint_mgr.cleanup_progress_files()
     
     # Find and remove temp files (only if no active processes)
     # NOTE: Preserving .mp3 files as they are the TTS conversion results
@@ -176,7 +162,7 @@ def cleanup_old_progress_files():
         # Do not remove .mp3 files - they are the end product of TTS conversion
         print("💾 TTS .mp3 files will be preserved (they are the conversion results)")
     
-    print("✅ Cleanup complete! TTS MP3 files were preserved.")
+    print("✅ Cleanup complete!")
 
 
 def main(recursive_call=False):

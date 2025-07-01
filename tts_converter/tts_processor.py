@@ -87,6 +87,39 @@ class TTSProcessor:
                 temp_files, completed_chunks, failed_chunks = self._restore_progress(progress)
                 last_chunk = self._find_last_completed_chunk(temp_files)
                 
+                # Restore output file and directory from progress to ensure consistency
+                if progress.get('output_file'):
+                    original_output_file = output_file
+                    original_output_dir = output_dir
+                    output_file = progress['output_file']
+                    # Update output_dir to match the stored output file's directory
+                    output_dir = os.path.dirname(output_file)
+                    
+                    # Log directory consistency
+                    if original_output_dir != output_dir:
+                        print(f"📁 Switched to previous output directory: {output_dir}")
+                        print(f"   (was going to use: {original_output_dir})")
+                    else:
+                        print(f"📁 Confirmed output directory: {output_dir}")
+                    
+                    # Ensure the output directory exists
+                    os.makedirs(output_dir, exist_ok=True)
+                
+                # If last session was force stopped (Ctrl+C), mark it in the progress
+                if self.shutdown_handler.is_force_stop_requested():
+                    self.checkpoint_mgr.save_progress(
+                        file_path,
+                        len(chunks),
+                        completed_chunks,
+                        list(failed_chunks),
+                        temp_files,
+                        output_file,
+                        language,
+                        slow,
+                        'force_stopped',
+                        prefix=prefix
+                    )
+                
                 # Restore prefix from progress if available
                 if not prefix and 'file_prefix' in progress and progress['file_prefix']:
                     prefix = progress['file_prefix']
@@ -98,50 +131,126 @@ class TTSProcessor:
                     raise Exception("No text found in file")
                 
                 chunks = TextProcessor.split_into_chunks(text, file_path=file_path)
-                temp_files, completed_chunks, failed_chunks = [], 0, set()
-                last_chunk = -1
+                temp_files = []
+                completed_chunks = 0
+                failed_chunks = set()
             
-            # Process chunks
-            if len(chunks) == 1:
-                result = self._process_single_chunk(chunks[0], output_file, language, slow, file_path)
-            else:
-                result = self._process_multiple_chunks(
-                    chunks, temp_files, completed_chunks, failed_chunks, 
-                    last_chunk, output_file, language, slow, file_path, prefix, output_dir
-                )
+            # Initialize progress tracking
+            self.progress_tracker.start(len(chunks))
             
-            # Handle delete progress request
-            if self.shutdown_handler.should_delete_progress():
-                print("\n🗑️ Deleting all progress as requested...")
-                self.checkpoint_mgr.delete_all_progress(file_path)
-                print("✅ Progress deleted. Conversion can be restarted from the beginning.")
-                return False  # Return False since we deleted progress
+            # Process remaining chunks
+            for i in range(completed_chunks, len(chunks)):
+                if self.shutdown_handler.should_continue():
+                    # Mark start of chunk processing
+                    self.progress_tracker.start_chunk()
+                    
+                    # Update progress info before processing
+                    self.progress_tracker.update(
+                        completed_chunks,
+                        f"Processing chunk {i+1}/{len(chunks)}"
+                    )
+                    
+                    # Get chunk output filename
+                    if prefix:
+                        # Use format "prefix N.mp3" for more user-friendly files
+                        chunk_filename = f"{prefix} {i+1}.mp3"
+                    else:
+                        # Use technical format for non-prefixed files
+                        chunk_filename = f"{Config.TEMP_FILE_PREFIX}{i+1}.mp3"
+                    
+                    temp_file = os.path.join(output_dir, chunk_filename)
+                    
+                    # Process the chunk with retry logic
+                    max_attempts = Config.MAX_RETRIES
+                    for attempt in range(max_attempts):
+                        try:
+                            # Convert chunk to speech
+                            if self._convert_chunk_to_speech(
+                                chunks[i],
+                                temp_file,
+                                language=language,
+                                slow=slow
+                            ):
+                                # Record successful completion
+                                temp_files.append(temp_file)
+                                completed_chunks = i + 1
+                                
+                                # Update checkpoint progress
+                                self.checkpoint_mgr.save_progress(
+                                    file_path,
+                                    len(chunks),
+                                    completed_chunks,
+                                    list(failed_chunks),
+                                    temp_files,
+                                    output_file,
+                                    language,
+                                    slow,
+                                    'in_progress',
+                                    prefix=prefix
+                                )
+                                
+                                # Track chunk completion time
+                                chunk_time = self.progress_tracker.complete_chunk()
+                                
+                                break  # Success - exit retry loop
+                            
+                        except Exception as e:
+                            if attempt == max_attempts - 1:
+                                # Final attempt failed
+                                failed_chunks.add(i)
+                                self.checkpoint_mgr.save_progress(
+                                    file_path,
+                                    len(chunks),
+                                    completed_chunks,
+                                    list(failed_chunks),
+                                    temp_files,
+                                    output_file,
+                                    language,
+                                    slow,
+                                    'processing',
+                                    prefix=prefix
+                                )
+                                raise Exception(
+                                    f"Failed to convert chunk {i+1} after {max_attempts} attempts: {e}"
+                                )
+                            else:
+                                # Retry
+                                delay = Config.RETRY_DELAY * (2 ** attempt)
+                                print(f"\n⚠️ Error processing chunk {i+1}, retrying in {delay}s: {e}")
+                                time.sleep(delay)
+                
+                if not self.shutdown_handler.should_continue():
+                    # Update progress one last time before stopping
+                    self.checkpoint_mgr.save_progress(
+                        file_path,
+                        len(chunks),
+                        completed_chunks,
+                        list(failed_chunks),
+                        temp_files,
+                        output_file,
+                        language,
+                        slow,
+                        'force_stopped' if self.shutdown_handler.is_force_stop_requested() else 'stopped',
+                        prefix=prefix
+                    )
+                    break
             
-            # Handle force stop request - do not delete progress, just report status
-            if self.shutdown_handler.should_force_stop():
-                print("\n⚡ Force stop completed. When you resume, the last chunk will be redone.")
-                return False  # Return False since we force stopped
+            self.progress_tracker.stop("Processing complete")
             
-            return result
+            # Check if all chunks were completed
+            all_chunks_completed = (completed_chunks == len(chunks) and len(failed_chunks) == 0)
+            
+            # Clean up progress files if all chunks were completed
+            if all_chunks_completed and self.shutdown_handler.should_continue():
+                self._cleanup_after_processing(file_path)
+                print(f"\n✅ All audio files saved to directory: {output_dir}")
+                print(f"📁 Created {len(temp_files)} individual audio files")
+            
+            return len(temp_files) > 0 and all_chunks_completed
         
         except Exception as e:
-            try:
-                self.progress_tracker.stop("Error")
-            except:
-                pass
-            
-            # Handle delete progress request even on error
-            if self.shutdown_handler.should_delete_progress():
-                print("\n🗑️ Deleting all progress as requested...")
-                self.checkpoint_mgr.delete_all_progress(file_path)
-                print("✅ Progress deleted. Conversion can be restarted from the beginning.")
-            
-            # Handle force stop request even on error
-            elif self.shutdown_handler.should_force_stop():
-                print("\n⚡ Force stop completed with errors. When you resume, the last chunk will be redone.")
-            
-            print(f"\n{Config.ERROR_EMOJI} Error: {e}")
-            return False
+            self.progress_tracker.stop("Error")
+            raise e
     
     def _process_single_chunk(self, chunk, output_file, language, slow, file_path):
         """Process single chunk."""
@@ -322,12 +431,15 @@ class TTSProcessor:
         completed_chunks = progress.get('completed_chunks', 0)
         failed_chunks = set(progress.get('failed_chunks', []))
         
-        # Check if last session was force stopped
+        # Check if last session was force stopped (Ctrl+C or force stop command)
         was_force_stopped = progress.get('status') == 'force_stopped'
         
         # If force stopped, we need to decrement the completed chunks to redo the last one
         if was_force_stopped and completed_chunks > 0:
-            print(f"⚡ Detected previous force stop - will restart from chunk {completed_chunks}")
+            print(f"\n" + "="*60)
+            print("⚡ RESUMING FROM FORCE STOP")
+            print("="*60)
+            print(f"Last session was interrupted during chunk {completed_chunks}")
             completed_chunks -= 1
             
             # If we have temp files, remove the last one as it may be incomplete
@@ -339,11 +451,12 @@ class TTSProcessor:
                 if os.path.exists(last_temp_file):
                     try:
                         os.remove(last_temp_file)
-                        print(f"🧹 Removed potentially incomplete chunk file from force stop: {os.path.basename(last_temp_file)}")
+                        print(f"🧹 Removed incomplete chunk file: {os.path.basename(last_temp_file)}")
                     except Exception as e:
                         print(f"⚠️ Could not remove incomplete chunk file: {e}")
                         
-            print(f"💡 Will restart chunk {completed_chunks + 1} (force stop restarted chunk)")
+            print(f"💡 Will restart from chunk {completed_chunks + 1}")
+            print("="*60 + "\n")
         
         # Verify temp files exist
         existing_files = [f for f in temp_files if os.path.exists(f)]
@@ -361,13 +474,12 @@ class TTSProcessor:
             print("="*60)
             
             # Sort files by chunk number to display in order
-            # Use a lambda to handle None values from _extract_chunk_number
             sorted_files = sorted(existing_files, key=lambda f: self._extract_chunk_number(f) or float('inf'))
             
-            for i, temp_file in enumerate(sorted_files):
+            for temp_file in sorted_files:
                 chunk_num = self._extract_chunk_number(temp_file)
                 if chunk_num is not None:
-                    # Get file creation time as an approximation of processing time
+                    # Get file stats
                     try:
                         file_stats = os.stat(temp_file)
                         file_size = file_stats.st_size / (1024 * 1024)  # Convert to MB
@@ -376,7 +488,7 @@ class TTSProcessor:
                         print(f"✅ Chunk {chunk_num} completed")
             
             print("="*60)
-            print(f"Next chunk to process will be chunk #{completed_chunks + 1}")
+            print(f"Next chunk to process: #{completed_chunks + 1}")
             print("="*60 + "\n")
         
         return existing_files, completed_chunks, failed_chunks
