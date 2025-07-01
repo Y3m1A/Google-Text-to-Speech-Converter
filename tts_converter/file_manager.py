@@ -12,28 +12,55 @@ class FileManager:
     
     @staticmethod
     def find_text_files():
-        """Find all .txt files in the TTS project folder and its subdirectories."""
+        """Find all .txt files in the TTS project folder and its subdirectories.
+        
+        Excludes system directories like .venv, .git, __pycache__, node_modules, etc.
+        to focus on user-created text files only.
+        """
         # Get the directory where the tts_converter package is located
         tts_converter_dir = os.path.dirname(os.path.abspath(__file__))
         # Go up one level to get the project root directory
         project_root = os.path.dirname(tts_converter_dir)
         
+        # Directories to exclude from search (common system/build directories)
+        excluded_dirs = {
+            '.venv', 'venv', '.env', 'env',  # Virtual environments
+            '.git', '.svn', '.hg',           # Version control
+            '__pycache__', '.pytest_cache',  # Python cache
+            'node_modules', '.npm',          # Node.js
+            '.idea', '.vscode',              # IDEs
+            'build', 'dist', '.build',       # Build directories
+            '.tox', '.coverage',             # Testing/coverage
+            'site-packages'                  # Python packages
+        }
+        
         # Find all .txt files in the project root and subdirectories
         files = []
         for root, dirs, filenames in os.walk(project_root):
-            # Only search within the project folder
-            if not root.startswith(project_root):
-                continue
-                
+            # Remove excluded directories from the search path
+            # This modifies dirs in-place to prevent os.walk from entering them
+            dirs[:] = [d for d in dirs if d not in excluded_dirs]
+            
             for filename in filenames:
                 if filename.endswith('.txt'):
-                    files.append(os.path.join(root, filename))
+                    # Additional filter: exclude files that are clearly system/package files
+                    # by checking for common patterns in their names
+                    if not any(pattern in filename.lower() for pattern in 
+                              ['license', 'readme', 'changelog', 'authors', 'contributors',
+                               'requirements', 'setup', 'manifest', 'entry_points', 'top_level']):
+                        files.append(os.path.join(root, filename))
         
         return sorted(files)
     
     @staticmethod
     def interactive_file_selection():
-        """Interactive file selection interface."""
+        """Interactive file selection interface.
+        
+        Searches for .txt files only within the TTS project directory and its
+        subdirectories, excluding system directories like .venv, .git, etc.
+        Always provides an option to enter a custom file path for files 
+        located anywhere on the system.
+        """
         print("\n======================================================================")
         print("🎵 TTS CONVERTER - FILE SELECTION")
         print("======================================================================")
@@ -41,10 +68,11 @@ class FileManager:
         files = FileManager.find_text_files()
         
         if not files:
-            print("❌ No .txt files found in TTS project folder or its subdirectories!")
+            print("❌ No user .txt files found in TTS project folder or its subdirectories!")
             print("\n💡 Tips:")
-            print("   • Add .txt files to the TTS project folder or its subdirectories")
-            print("   • Use -f option to specify a file directly")
+            print("   • Add .txt files to the TTS project folder or create subdirectories with .txt files")
+            print("   • The search excludes system directories (.venv, .git, __pycache__, etc.)")
+            print("   • Use the custom file path option below to specify a file anywhere on your system")
             print("\nWould you like to enter a custom file path? (y/n): ", end='')
             sys.stdout.flush()
             choice = input().strip().lower()
@@ -127,7 +155,8 @@ class FileManager:
                     continue
                     
             except KeyboardInterrupt:
-                # No need to print message here, main script will handle it
+                # Gracefully handle Ctrl+C in file selection
+                print("\n❌ File selection cancelled.")
                 return "QUIT"  # Special return value to indicate user explicitly quit
     
     @staticmethod

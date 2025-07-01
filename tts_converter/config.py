@@ -19,6 +19,25 @@ class Config:
     PROGRESS_UPDATE_INTERVAL = 1.0
     TERMINAL_WIDTH = 120
     
+    # Multiprocessing Settings
+    MAX_PARALLEL_CHUNKS = 4  # Maximum number of chunks to process simultaneously
+    _multiprocessing_enabled = True  # Enable parallel processing by default
+    
+    @classmethod
+    def get_multiprocessing_enabled(cls):
+        """Get current multiprocessing setting."""
+        return cls._multiprocessing_enabled
+    
+    @classmethod
+    def set_multiprocessing_enabled(cls, enabled):
+        """Set multiprocessing enabled/disabled."""
+        cls._multiprocessing_enabled = enabled
+    
+    @property
+    def MULTIPROCESSING_ENABLED(self):
+        """Property to access multiprocessing setting."""
+        return self._multiprocessing_enabled
+    
     # Base directory - will be dynamically set
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     

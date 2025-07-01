@@ -3,12 +3,23 @@
 Modern Text-to-Speech Converter
 A clean, modular implementation with checkpoint/resume functionality.
 
+REQUIREMENTS: Python 3.6 or higher is required to run this script.
+Run with: python3 tts_converter_main.py [options]
+
 IMPORTANT: This script preserves all generated .mp3 files as they are the 
 final TTS conversion results. Individual chunk files (temp_chunk_*.mp3) 
 are NOT cleaned up automatically - they represent the converted audio output.
 """
-import os
 import sys
+
+# Check Python version before importing anything else
+if sys.version_info < (3, 6):
+    print("❌ ERROR: Python 3.6 or higher is required!")
+    print(f"   Current version: {sys.version}")
+    print("💡 Please run with: python3 tts_converter_main.py")
+    sys.exit(1)
+
+import os
 import glob
 import argparse
 import time
@@ -27,8 +38,9 @@ from tts_converter.file_manager import FileManager
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Convert text files to speech with checkpoints and resume capability.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description="Convert text files to speech with checkpoints and resume capability. Requires Python 3.6+",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        epilog="USAGE: python3 tts_converter_main.py [file] [options]"
     )
     
     parser.add_argument(
@@ -95,6 +107,12 @@ def parse_arguments():
         action="store_true"
     )
     
+    parser.add_argument(
+        "--no-parallel", 
+        help="Disable parallel processing and use sequential processing",
+        action="store_true"
+    )
+    
     return parser.parse_args()
 
 
@@ -103,6 +121,7 @@ def print_header():
     print("\n" + "=" * 80)
     print("🎙️  MODERN TEXT-TO-SPEECH CONVERTER  🎙️")
     print("=" * 80)
+    print("📋 Requires Python 3.6+ | Run with: python3 tts_converter_main.py")
     print("=" * 80 + "\n")
 
 
@@ -118,7 +137,6 @@ def show_help():
     print("  f/force     - Force stop immediately (will redo current chunk when resumed)")
     print("  sd/delete   - Stop and DELETE all progress")
     print("  h/help      - Show this help")
-    print("  Ctrl+C      - Force interrupt")
     print("="*60)
     print("💾 Progress is automatically saved after each chunk!")
     print("🔄 You can always resume later by running the script again.")
@@ -133,36 +151,63 @@ def cleanup_old_progress_files():
     """Clean up old progress files manually."""
     project_dir = Config.get_project_path()
     
-    print("🧹 Cleaning up old progress files...")
-    print("⚠️  This will remove all progress databases and boundaries files.")
+    print("🧹 Global cleanup of old progress files")
+    print("=" * 60)
+    print("⚠️  This will remove ALL progress databases and boundaries files.")
     print("⚠️  Any ongoing TTS processes will need to restart from the beginning.")
     print("📁 TTS .mp3 files will be preserved as they are the conversion results.")
+    print("=" * 60)
     
     print("")  # Add an empty line
     # Move the cursor up one line
     sys.stdout.write("\033[F")
-    print("Continue? (y/n): ", end='')
+    print("Continue with global cleanup? (y/n): ", end='')
     sys.stdout.flush()
     confirm = input().lower().strip()
     if confirm != 'y':
-        print("Cleanup cancelled.")
+        print("❌ Global cleanup cancelled.")
         return
         
+    print("\n🗑️ Starting global cleanup process...")
+    
     # Create a temporary checkpoint manager for cleanup
     checkpoint_mgr = CheckpointManager()
     
     # Clean up all checkpoint databases and progress
-    checkpoint_mgr.cleanup_progress_files()
+    try:
+        checkpoint_mgr.cleanup_progress_files()
+        print("✅ Cleaned up checkpoint databases")
+    except Exception as e:
+        print(f"⚠️ Error cleaning checkpoint databases: {e}")
     
-    # Find and remove temp files (only if no active processes)
-    # NOTE: Preserving .mp3 files as they are the TTS conversion results
-    temp_files = glob.glob(os.path.join(project_dir, "temp_chunk_*.mp3"))
-    if temp_files:
-        print(f"📁 Found {len(temp_files)} TTS chunk files - preserving them as they are conversion results")
-        # Do not remove .mp3 files - they are the end product of TTS conversion
-        print("💾 TTS .mp3 files will be preserved (they are the conversion results)")
+    # Find and remove boundary files
+    try:
+        boundary_files = glob.glob(os.path.join(project_dir, "*_chunk_boundaries.json"))
+        if boundary_files:
+            for boundary_file in boundary_files:
+                try:
+                    os.remove(boundary_file)
+                    print(f"🧹 Removed boundaries file: {os.path.basename(boundary_file)}")
+                except Exception as e:
+                    print(f"⚠️ Could not remove {os.path.basename(boundary_file)}: {e}")
+        else:
+            print("ℹ️ No boundary files found")
+    except Exception as e:
+        print(f"⚠️ Error during boundary file cleanup: {e}")
     
-    print("✅ Cleanup complete!")
+    # Find and report temp files (but preserve .mp3 files)
+    try:
+        temp_files = glob.glob(os.path.join(project_dir, "temp_chunk_*.mp3"))
+        if temp_files:
+            print(f"📁 Found {len(temp_files)} TTS chunk files - preserving them as they are conversion results")
+            print("💾 TTS .mp3 files will be preserved (they are the conversion results)")
+        else:
+            print("ℹ️ No temporary chunk files found")
+    except Exception as e:
+        print(f"⚠️ Error checking for temporary files: {e}")
+    
+    print("✅ Global cleanup complete!")
+    print("🔄 All progress has been reset. Future conversions will start fresh.")
 
 
 def main(recursive_call=False):
@@ -180,7 +225,21 @@ def main(recursive_call=False):
         return
     
     # Ensure dependencies
-    TTSUtils.ensure_dependencies()
+    print("🔧 Checking TTS dependencies...")
+    try:
+        TTSUtils.ensure_dependencies()
+        print("✅ All TTS dependencies are available!")
+    except Exception as e:
+        print(f"❌ Dependency check failed: {e}")
+        print("💡 Please install required dependencies and try again.")
+        sys.exit(1)
+    
+    # Handle multiprocessing configuration
+    if args.no_parallel:
+        Config.set_multiprocessing_enabled(False)
+        print("⚙️ Multiprocessing configuration updated:")
+        print("⚠️ Parallel processing disabled - using sequential processing")
+        print("ℹ️ This may increase processing time but reduces system load")
     
     # Create components
     checkpoint_mgr = CheckpointManager()
@@ -190,58 +249,147 @@ def main(recursive_call=False):
     
     # Handle command-specific functions
     if args.clean:
-        print("🧹 Cleaning up previous progress files...")
-        checkpoint_mgr.cleanup_progress_files(args.file)
-        TextProcessor.cleanup_chunk_boundaries(args.file)
-        print("✅ Cleanup complete!")
+        if args.file:
+            print(f"🧹 Cleaning up previous progress files for: {os.path.basename(args.file)}")
+            print("⚠️  This will remove progress databases and boundaries files for this specific file.")
+            print("⚠️  Audio .mp3 files will be preserved as they are the conversion results.")
+            
+            print("")  # Add an empty line
+            # Move the cursor up one line
+            sys.stdout.write("\033[F")
+            print("Continue with cleanup? (y/n): ", end='')
+            sys.stdout.flush()
+            confirm = input().lower().strip()
+            if confirm != 'y':
+                print("❌ Cleanup cancelled.")
+                return
+            
+            print(f"🗑️ Cleaning progress files for: {os.path.basename(args.file)}")
+            try:
+                checkpoint_mgr.cleanup_progress_files(args.file)
+                if TextProcessor.cleanup_chunk_boundaries(args.file):
+                    print(f"🧹 Removed boundaries file for: {os.path.basename(args.file)}")
+                else:
+                    print(f"ℹ️ No boundaries file found for: {os.path.basename(args.file)}")
+                print("✅ Cleanup complete!")
+            except Exception as e:
+                print(f"❌ Error during cleanup: {e}")
+        else:
+            print("❌ No file specified for cleanup.")
+            print("💡 Use: python tts_converter_main.py <file> --clean")
         return
     
-    if args.delete_progress and args.file:
-        print("🗑️ Deleting all progress data...")
-        checkpoint_mgr.delete_all_progress(args.file)
-        print("✅ Progress deleted successfully!")
+    if args.delete_progress:
+        if not args.file:
+            print("❌ No file specified for progress deletion.")
+            print("💡 Use: python tts_converter_main.py <file> --delete-progress")
+            return
+        
+        if not os.path.exists(args.file):
+            print(f"❌ File '{args.file}' not found.")
+            print("❌ Cannot delete progress for a file that doesn't exist.")
+            return
+        
+        print(f"🗑️ Deleting all progress data for: {os.path.basename(args.file)}")
+        print("⚠️  This will remove all checkpoints and boundaries for this file.")
+        print("⚠️  You will need to restart conversion from the beginning.")
+        print("📁 Audio .mp3 files will be preserved.")
+        
+        print("")  # Add an empty line
+        # Move the cursor up one line
+        sys.stdout.write("\033[F")
+        print("Continue with progress deletion? (y/n): ", end='')
+        sys.stdout.flush()
+        confirm = input().lower().strip()
+        if confirm != 'y':
+            print("❌ Progress deletion cancelled.")
+            return
+        
+        try:
+            checkpoint_mgr.delete_all_progress(args.file)
+            if TextProcessor.cleanup_chunk_boundaries(args.file):
+                print(f"🧹 Removed boundaries file for: {os.path.basename(args.file)}")
+            else:
+                print(f"ℹ️ No boundaries file found for: {os.path.basename(args.file)}")
+            print("✅ Progress deleted successfully!")
+        except Exception as e:
+            print(f"❌ Error during progress deletion: {e}")
+        
         if args.info:
             # Only wanted to delete progress and show info
-            TTSUtils.show_file_info(args.file)
-            return
+            print(f"\n📊 Showing file information for: {os.path.basename(args.file)}")
+            try:
+                TTSUtils.show_file_info(args.file)
+            except Exception as e:
+                print(f"❌ Error showing file info: {e}")
+        return
     
     # Determine file to process
     file_path = args.file
     
     if args.interactive or not file_path:
+        print("📁 Starting interactive file selection...")
         file_path = FileManager.interactive_file_selection()
         if file_path == "QUIT":
-            print("\n❌ Exiting file selection.\n")
+            print("\n❌ File selection cancelled by user.")
+            print("👋 Exiting TTS converter.")
             return
         elif not file_path:
-            print("❌ No file selected. Exiting.")
+            print("❌ No file selected during interactive selection.")
+            print("💡 Please run the script again and select a valid text file.")
             return
     elif file_path and not os.path.exists(file_path):
-        print(f"❌ File '{file_path}' not found.")
-        print("💡 The file could not be found at the specified location.")
-        print("Switching to interactive file selection mode...")
+        print(f"❌ File '{file_path}' not found at specified location.")
+        print("💡 The file could not be found at the specified path.")
+        print("🔄 Switching to interactive file selection mode...")
         file_path = FileManager.interactive_file_selection()
         if file_path == "QUIT":
-            print("\n❌ Exiting file selection.\n")
+            print("\n❌ File selection cancelled by user.")
+            print("👋 Exiting TTS converter.")
             return
         elif not file_path:
-            print("❌ No file selected. Exiting.")
+            print("❌ No file selected during interactive selection.")
+            print("💡 Please run the script again and specify a valid file path.")
             return
     
     if args.info:
+        if not file_path:
+            print("❌ No file specified for information display.")
+            print("💡 Use: python tts_converter_main.py <file> --info")
+            return
+        
+        if not os.path.exists(file_path):
+            print(f"❌ File '{file_path}' not found.")
+            print("💡 Cannot show information for a file that doesn't exist.")
+            return
+        
         # Show file info and exit
-        TTSUtils.show_file_info(file_path)
+        print(f"📊 Showing file information for: {os.path.basename(file_path)}")
+        try:
+            TTSUtils.show_file_info(file_path)
+            print("✅ File information displayed successfully!")
+        except Exception as e:
+            print(f"❌ Error showing file info: {e}")
         return
     
     # Validate input file
+    print(f"🔍 Validating file: {os.path.basename(file_path)}")
     try:
         TTSUtils.check_file_readability(file_path)
+        print("✅ File validation successful!")
     except Exception as e:
-        print(f"{Config.ERROR_EMOJI} {e}")
+        print(f"❌ File validation failed: {e}")
+        print("💡 Please ensure the file exists and is readable.")
         sys.exit(1)
     
     # Validate language
-    args.language = TTSUtils.validate_language(args.language)
+    print(f"🌍 Validating language setting: {args.language}")
+    validated_language = TTSUtils.validate_language(args.language)
+    if validated_language != args.language:
+        print(f"⚙️ Language adjusted from '{args.language}' to '{validated_language}'")
+    else:
+        print(f"✅ Language '{validated_language}' validated successfully!")
+    args.language = validated_language
     
     # Check for existing progress to determine if we should ask for folder name
     existing_progress = checkpoint_mgr.load_progress(file_path)
@@ -416,6 +564,37 @@ def main(recursive_call=False):
         else:
             print(f"🔄 Continuing with existing settings from previous session")
     
+    # Validate and create output directory
+    print(f"\n📁 Validating output directory: {args.output_dir}")
+    try:
+        if not os.path.exists(args.output_dir):
+            os.makedirs(args.output_dir, exist_ok=True)
+            print(f"✅ Created output directory: {os.path.basename(args.output_dir)}")
+        else:
+            print(f"✅ Output directory exists: {os.path.basename(args.output_dir)}")
+        
+        # Test write permission
+        test_file = os.path.join(args.output_dir, ".write_test")
+        try:
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            print(f"✅ Write permissions confirmed for output directory")
+        except Exception as e:
+            raise Exception(f"No write permission in output directory: {e}")
+            
+    except Exception as e:
+        print(f"❌ Output directory validation failed: {e}")
+        print(f"💡 Falling back to default output directory...")
+        try:
+            args.output_dir = Config.get_default_output_dir()
+            os.makedirs(args.output_dir, exist_ok=True)
+            print(f"✅ Using default output directory: {args.output_dir}")
+        except Exception as fallback_error:
+            print(f"❌ Could not create fallback directory: {fallback_error}")
+            print(f"💡 Please check your permissions and try again.")
+            sys.exit(1)
+
     # Show help and start processing
     show_help()
     print(f"\n💡 TIP: Type commands (p/pause, r/resume, s/stop, f/force, h/help) anytime during processing")
@@ -449,10 +628,17 @@ def main(recursive_call=False):
     # Show final result
     total_time = time.time() - start_time
     if result:
-        print(f"\n{Config.COMPLETION_EMOJI} Conversion completed successfully!")
-        print(f"⏱️ Total elapsed time: {progress_tracker.format_time(total_time)}")
+        print(f"\n" + "=" * 80)
+        print(f"🎉 TTS CONVERSION COMPLETED SUCCESSFULLY! 🎉")
+        print(f"=" * 80)
+        print(f"📁 Source file: {os.path.basename(file_path)}")
+        print(f"🎵 Output location: {args.output_dir}")
+        print(f"⏱️ Total processing time: {progress_tracker.format_time(total_time)}")
+        print(f"✅ All audio files have been generated successfully!")
+        print(f"=" * 80)
         
         # Final attempt to clean up progress files if they still exist
+        cleanup_errors = []
         try:
             project_dir = Config.get_project_path()
             
@@ -463,37 +649,56 @@ def main(recursive_call=False):
                 if "tts" in db_file.lower() or "checkpoint" in db_file.lower():
                     try:
                         os.remove(db_file)
-                        print(f"🧹 Final cleanup - removed checkpoint database: {db_file}")
+                        print(f"🧹 Final cleanup - removed checkpoint database: {os.path.basename(db_file)}")
                     except Exception as e:
-                        print(f"⚠️ Could not remove database in final cleanup: {e}")
+                        cleanup_errors.append(f"Database {os.path.basename(db_file)}: {e}")
             
             # Explicitly try to remove the main checkpoints database if it still exists
             checkpoints_db = os.path.join(project_dir, "tts_checkpoints.db")
             if os.path.exists(checkpoints_db):
                 try:
                     os.remove(checkpoints_db)
-                    print(f"🧹 Final cleanup - removed main checkpoints database: {checkpoints_db}")
+                    print(f"🧹 Final cleanup - removed main checkpoints database")
                 except Exception as e:
-                    print(f"⚠️ Could not remove main checkpoints database in final cleanup: {e}")
+                    cleanup_errors.append(f"Main checkpoints database: {e}")
             
             # Find and remove any chunk boundary files
             boundary_files = glob.glob(os.path.join(project_dir, "*_chunk_boundaries.json"))
             for b_file in boundary_files:
                 try:
                     os.remove(b_file)
-                    print(f"🧹 Final cleanup - removed boundaries file: {b_file}")
+                    print(f"🧹 Final cleanup - removed boundaries file: {os.path.basename(b_file)}")
                 except Exception as e:
-                    print(f"⚠️ Could not remove boundaries file in final cleanup: {e}")
+                    cleanup_errors.append(f"Boundaries file {os.path.basename(b_file)}: {e}")
+            
+            if cleanup_errors:
+                print(f"⚠️ Some cleanup operations had issues:")
+                for error in cleanup_errors:
+                    print(f"   • {error}")
+            else:
+                print(f"✅ Final cleanup completed successfully!")
+                
         except Exception as e:
             print(f"⚠️ Error during final cleanup: {e}")
     else:
+        print(f"\n" + "=" * 80)
         if shutdown_handler.should_delete_progress():
-            print(f"\n{Config.STOP_EMOJI} Conversion stopped and progress deleted.")
+            print(f"🛑 TTS CONVERSION STOPPED - PROGRESS DELETED")
+            print(f"=" * 80)
+            print(f"📁 Source file: {os.path.basename(file_path)}")
+            print(f"🗑️ All progress data has been removed as requested.")
+            print(f"⚠️ You will need to start from the beginning if you convert this file again.")
         else:
-            print(f"\n{Config.STOP_EMOJI} Conversion stopped or encountered errors.")
-            print("💾 Progress has been saved and can be resumed later.")
+            print(f"⏸️ TTS CONVERSION STOPPED - PROGRESS SAVED")
+            print(f"=" * 80)
+            print(f"📁 Source file: {os.path.basename(file_path)}")
+            print(f"💾 Progress has been saved and can be resumed later.")
+            print(f"🔄 Run the script again with the same file to continue where you left off.")
+        print(f"⏱️ Processing time before stop: {progress_tracker.format_time(total_time)}")
+        print(f"=" * 80)
     
-    print("\n👋 TTS Process finished. See you again!")
+    print(f"\n👋 Thank you for using the Modern Text-to-Speech Converter!")
+    print(f"🎵 Your audio files are ready to enjoy.")
     print("=" * 80 + "\n")
 
 

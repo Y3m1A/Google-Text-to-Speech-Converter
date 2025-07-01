@@ -2,8 +2,11 @@
 
 A simple TTS converter with some interactive features
 
+Main Branch (parralel processing)
+Old Main Branch (single processing)
+
 ## Usage
-Simply run the tts_converter_main file.
+Simply run the tts_converter_main file with Python3
 The instructions will guide your through the process.
 
 For best use, it is advised to put the .txt files you wish to convert into the same folder as the TTS converter.
@@ -20,7 +23,7 @@ For best use, it is advised to put the .txt files you wish to convert into the s
 - **Chunking Process**: When you choose a .txt file, it is broken down into chunks, which are then processed through the TTS.
 - **Saves Progress**: If the conversion process is interupted, there are many back up systems that can pick up from where you left off. 
 - **Custom Commands**: During processing you can issue a series of commands such as pause or resume.
-- **Actual Information**: There are also cool features which give you on file progress such as the time elapsed.
+- **Actual Information**: There are also cool features such as time elapsed or the size of the files.
 - **File Management**: The code creates organized folders and file structures for output and cleans up after the conversion process is complete.
 
 ## Processing Commands
@@ -33,4 +36,3 @@ For best use, it is advised to put the .txt files you wish to convert into the s
 | `f` or `force` | Force stop immediately |
 | `sd` or `delete` | Stop and delete all progress |
 | `h` or `help` | Show help |
-| `Ctrl+C` | Force interrupt |

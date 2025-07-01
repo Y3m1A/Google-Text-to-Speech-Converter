@@ -24,26 +24,13 @@ class ShutdownHandler:
     
     def _setup_signals(self):
         """Setup signal handlers."""
-        signal.signal(signal.SIGINT, self._signal_handler)
+        # Only handle SIGTERM, not SIGINT (Ctrl+C) - let it be handled naturally
         signal.signal(signal.SIGTERM, self._signal_handler)
     
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals (Ctrl+C/SIGINT and SIGTERM)."""
-        if signum == signal.SIGINT:  # Ctrl+C
-            # Set flags for immediate stop and force stop (to redo current chunk on resume)
-            self.shutdown_requested = True
-            self.force_stop_requested = True
-            
-            # Print exit message and exit immediately
-            print("\n" + "="*60)
-            print(f"{Config.STOP_EMOJI} Process interrupted by user (Ctrl+C)")
-            print(f"💾 Progress saved - you can resume from the last completed chunk")
-            print(f"⚠️  Current chunk will be redone when resumed")
-            print("="*60 + "\n")
-            
-            # Force immediate exit
-            sys.exit(1)
-        else:  # SIGTERM or other signals
+        """Handle shutdown signals (SIGTERM)."""
+        # Only handle SIGTERM - SIGINT (Ctrl+C) is no longer handled here
+        if signum == signal.SIGTERM:
             self.shutdown_requested = True
             if self.processing_started:
                 print(f"\n{Config.STOP_EMOJI} Received shutdown signal ({signum})")
@@ -69,6 +56,9 @@ class ShutdownHandler:
                 if user_input:
                     self._process_command(user_input)
             except (EOFError, KeyboardInterrupt):
+                # Treat Ctrl+C like a normal stop command, not force stop
+                print(f"\n{Config.STOP_EMOJI} Stop requested via Ctrl+C")
+                self.shutdown_requested = True
                 break
             except Exception:
                 time.sleep(0.1)
@@ -79,6 +69,9 @@ class ShutdownHandler:
         if not self.processing_started:
             return
             
+        # Clear the current input line before printing command response
+        print("\r\033[K", end="")  # Clear current line
+        
         if command in ['p', 'pause']:
             self.pause_requested = True
             print(f"{Config.PAUSE_EMOJI} Pause requested. Will pause after current chunk...")
@@ -104,6 +97,10 @@ class ShutdownHandler:
             self._show_help()
         elif command in ['c', 'clear']:
             self._clear_console()
+        
+        # Restore the input prompt if we're still processing
+        if not self.shutdown_requested:
+            print("Input your command here: ", end="", flush=True)
     
     def _show_help(self):
         """Show available commands."""
@@ -118,17 +115,19 @@ class ShutdownHandler:
         print("q/quit      - Stop and save progress")
         print("h/help      - Show this help")
         print("c/clear     - Clear the console")
-        print("Ctrl+C      - Force stop")
         print("=" * 60)
         print("⚠️  'sd' or 'delete' will remove ALL progress and temp files!")
         print("⚠️  'f' or 'force' will stop immediately and current chunk will be redone!")
         print("=" * 60)
+        print("Input your command here: ", end="", flush=True)
     
     def _clear_console(self):
         """Clear the console screen."""
         # This is a cross-platform way to clear the console
         import os
         os.system('cls' if os.name == 'nt' else 'clear')
+        print("📝 Console cleared. Processing continues...")
+        print("Input your command here: ", end="", flush=True)
     
     def _clear_line_and_print(self, message):
         """Clear progress line and print message."""
@@ -148,12 +147,16 @@ class ShutdownHandler:
     def handle_pause(self):
         """Handle pause functionality."""
         if self.pause_requested:
-            self._clear_line_and_print(f"{Config.PAUSE_EMOJI} PAUSED - Press 'r' and Enter to resume")
+            print("\r\033[K", end="")  # Clear current line
+            print(f"{Config.PAUSE_EMOJI} PAUSED - Press 'r' and Enter to resume")
+            print("Input your command here: ", end="", flush=True)
             while self.pause_requested and not self.shutdown_requested:
                 time.sleep(0.1)
             if not self.shutdown_requested:
-                self._clear_line_and_print(f"{Config.RESUME_EMOJI} RESUMED")
+                print("\r\033[K", end="")  # Clear current line
+                print(f"{Config.RESUME_EMOJI} RESUMED")
                 time.sleep(1)
+                print("Input your command here: ", end="", flush=True)
     
     def should_delete_progress(self):
         """Check if progress deletion was requested."""

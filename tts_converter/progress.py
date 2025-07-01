@@ -39,6 +39,22 @@ class ProgressTracker:
         print(f"📊 Processing {total_items} chunks...")
         print("Input your command here: ", end="", flush=True)
     
+    def start_parallel(self, total_items, status="Starting parallel processing..."):
+        """Start progress tracking for parallel processing."""
+        with self._lock:
+            self.total_items = total_items
+            self.completed_items = 0
+            self.current_status = status
+            self._last_status_length = 0
+            self._start_time = time.time()
+            
+            # Load previous cumulative time if available
+            if self._checkpoint_mgr and self._file_path:
+                self._previous_cumulative_time = self._checkpoint_mgr.get_cumulative_time(self._file_path)
+        
+        # Print initial status for parallel processing
+        print(f"📊 Processing {total_items} chunks in parallel...")
+    
     def update(self, completed, status=""):
         """Update progress status, keeping command prompt at the bottom."""
         with self._lock:
@@ -69,23 +85,24 @@ class ProgressTracker:
             else:
                 eta_str = "complete"
         
-        # Clear the current line and print updated status
-        print(f"\r{' ' * 120}", end="")  # Clear the line
+        # Clear the current line and move cursor up to overwrite previous status
+        print("\r\033[K", end="")  # Clear current line
+        print("\033[F\r\033[K", end="")  # Move up one line and clear it
         
-        # Print timing info on the next line and return to input prompt
+        # Print timing info
         session_str = self.format_time(session_elapsed)
         total_str = self.format_time(total_elapsed)
         
         if self.total_items > 0:
             next_chunk = self.completed_items + 1
             if next_chunk <= self.total_items:
-                print(f"\r📝 Processing chunk {next_chunk}/{self.total_items} | Session: {session_str} | Total: {total_str} | ETA: {eta_str}")
+                print(f"📝 Processing chunk {next_chunk}/{self.total_items} | Session: {session_str} | Total: {total_str} | ETA: {eta_str}")
             else:
-                print(f"\r📝 Completed {self.completed_items}/{self.total_items} | Session: {session_str} | Total: {total_str}")
+                print(f"📝 Completed {self.completed_items}/{self.total_items} | Session: {session_str} | Total: {total_str}")
         else:
-            print(f"\r📝 {message} | Session: {session_str} | Total: {total_str}")
+            print(f"📝 {message} | Session: {session_str} | Total: {total_str}")
             
-        print("\nInput your command here: ", end="", flush=True)
+        print("Input your command here: ", end="", flush=True)
     
     def stop(self, final_status="Stopped"):
         """Stop progress tracking."""
@@ -98,8 +115,8 @@ class ProgressTracker:
                 self._checkpoint_mgr.update_cumulative_time(self._file_path, session_elapsed)
         
         # Clear any partial progress lines and print final status
-        print(f"\r{' ' * 120}", end="")  # Clear the line
-        print(f"\r📝 {final_status}")
+        print("\r\033[K", end="")  # Clear current line
+        print(f"📝 {final_status}")
     
     def format_time(self, seconds):
         """Format time in a human-readable way."""
@@ -132,12 +149,15 @@ class ProgressTracker:
         chunk_time = self.complete_chunk()  # Call existing method
         
         with self._lock:
-            # Clear the current line and show completion
-            print(f"\r{' ' * 120}", end="")  # Clear the line
-            size_info = f" ({chunk_size})" if chunk_size else ""
-            print(f"\r✅ Chunk {self.completed_items}/{self.total_items} Completed{size_info}")
+            # Clear the current line and input prompt to show completion
+            print("\r\033[K", end="")  # Clear current line
+            print("\033[F\r\033[K", end="")  # Move up one line and clear it
             
-            # Now show processing info for next chunk
+            # Show completion message
+            size_info = f" ({chunk_size})" if chunk_size else ""
+            print(f"✅ Chunk {self.completed_items}/{self.total_items} completed{size_info}")
+            
+            # Now show processing info for next chunk if not complete
             session_elapsed = time.time() - self._start_time if self._start_time else 0
             total_elapsed = session_elapsed + self._previous_cumulative_time
             
@@ -165,7 +185,7 @@ class ProgressTracker:
             else:
                 print(f"📝 All chunks completed! | Session: {session_str} | Total: {total_str}")
                 
-            print("\nInput your command here: ", end="", flush=True)
+            print("Input your command here: ", end="", flush=True)
         
         return chunk_time
 

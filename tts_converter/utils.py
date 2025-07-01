@@ -55,7 +55,8 @@ class TTSUtils:
                 else:
                     print("Automatic installation skipped.")
             except KeyboardInterrupt:
-                print("\nInstallation cancelled.")
+                print("\n❌ Installation cancelled.")
+                return
         
         # If there are still missing packages, show installation instructions and exit
         if missing_packages:
