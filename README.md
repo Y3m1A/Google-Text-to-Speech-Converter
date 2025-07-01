@@ -1,9 +1,12 @@
 # Google Text-to-Speech Converter
 
-A modular text-to-speech converter with checkpoint/resume functionality.
+A simple TTS converter with some interactive features
 
 ## Usage
-Simply run the tts_converter_main file
+Simply run the tts_converter_main file.
+The instructions will guide your through the process.
+
+For best use, it is advised to put the .txt files you wish to convert into the same folder as the TTS converter.
 
 ## Requirements
 
@@ -12,14 +15,13 @@ Simply run the tts_converter_main file
 - gTTS library
 - pydub library
 
-## Core Features
+## Break Down
 
-- **Text Conversion**: Transforms text files into MP3 audio files using Google's TTS API
-- **Checkpoint System**: Automatically saves progress after each processed chunk
-- **Resume Capability**: Continues conversion from last successful point if interrupted
-- **Interactive Controls**: Real-time commands to pause, resume, or stop conversion
-- **File Management**: Creates organized folders and file structures for output
-- **Progress Tracking**: Shows detailed status of ongoing conversions
+- **Chunking Process**: When you choose a .txt file, it is broken down into chunks, which are then processed through the TTS.
+- **Saves Progress**: If the conversion process is interupted, there are many back up systems that can pick up from where you left off. 
+- **Custom Commands**: During processing you can issue a series of commands such as pause or resume.
+- **Actual Information**: There are also cool features which give you on file progress such as the time elapsed.
+- **File Management**: The code creates organized folders and file structures for output and cleans up after the conversion process is complete.
 
 ## Processing Commands
 
